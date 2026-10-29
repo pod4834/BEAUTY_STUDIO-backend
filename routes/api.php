@@ -2,6 +2,7 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Process;
 
 use App\Models\User;
 use Illuminate\Support\Carbon;
@@ -15,7 +16,6 @@ use App\Http\Controllers\OrderController;
 use App\Http\Controllers\AdminController; 
 use App\Http\Controllers\Api\ReservationController; 
 use App\Http\Controllers\GalleryController; 
-use App\Http\Controllers\Api\SimulationController; 
 
 /*
 |--------------------------------------------------------------------------
@@ -40,28 +40,6 @@ Route::post('/reservations', [ReservationController::class, 'store']);
 Route::get('/reservations/{id}', [ReservationController::class, 'show']);
 Route::put('/reservations/{id}', [ReservationController::class, 'update']);
 Route::put('/reservations/{id}/cancel', [ReservationController::class, 'cancel']);
-
-// CELLVIA 시뮬레이터 API 라우트
-Route::prefix('simulation')->group(function () {
-    Route::get('/scenarios', [SimulationController::class, 'getScenarios']);
-    Route::post('/scenarios', [SimulationController::class, 'saveScenario']);
-    Route::delete('/scenarios/{id}', [SimulationController::class, 'deleteScenario']);
-    Route::post('/scenarios/{id}/memo', [SimulationController::class, 'updateMemo']);
-
-    Route::get('/placements', [SimulationController::class, 'getPlacements']);
-    Route::post('/placements', [SimulationController::class, 'savePlacements']);
-
-    // 개월수 선택형 주기 가입 API 라우트 (2, 3, 4개월 개별 생성)
-    Route::post('/seed-period', [SimulationController::class, 'seedPeriod']);
-    
-    // 💡 [추가] 2·3·4개월 전체 시나리오 DB 일괄 생성 라우트
-    Route::post('/seed-all', [SimulationController::class, 'seedAllPresets']);
-
-    // 💡 [추가] 회원 기수 변경 라우트
-    Route::post('/node', [SimulationController::class, 'updateNode']);
-    
-    Route::get('/calculate-simulation', [SimulationController::class, 'calculateSimulation']);
-});
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
@@ -116,4 +94,51 @@ Route::middleware('auth:sanctum')->group(function () {
             'thisMonth' => $thisMonthUsers
         ]);
     });
+});
+
+// 🚀 관리자 원클릭 GitHub 동기화 API
+Route::post('/admin/git-sync', function (Request $request) {
+    if (!app()->environment('local')) {
+        return response()->json([
+            'success' => false,
+            'message' => '보안을 위해 로컬 개발 환경(내 컴퓨터)에서만 GitHub 업로드가 가능합니다.'
+        ], 403);
+    }
+
+    $commitMsg = $request->input('message') ?: 'Admin: Auto-sync ' . now()->format('Y-m-d H:i:s');
+    
+    $paths = [
+        'Backend (shop-backend)' => base_path(),
+        'Frontend (shop-frontend)' => dirname(base_path()) . DIRECTORY_SEPARATOR . 'shop-frontend',
+    ];
+
+    $results = [];
+
+    foreach ($paths as $name => $path) {
+        if (!is_dir($path)) {
+            $results[$name] = "폴더를 찾을 수 없습니다: {$path}";
+            continue;
+        }
+
+        $status = Process::path($path)->run('git status --porcelain');
+        if (empty(trim($status->output()))) {
+            $results[$name] = '변경된 파일이 없습니다 (최신 상태).';
+            continue;
+        }
+
+        Process::path($path)->run('git add .');
+        $commit = Process::path($path)->run(['git', 'commit', '-m', $commitMsg]);
+        $push = Process::path($path)->timeout(120)->run('git push -u origin HEAD');
+
+        if ($push->successful()) {
+            $results[$name] = 'GitHub 업로드(Push) 완료!';
+        } else {
+            $results[$name] = '업로드 실패: ' . ($push->errorOutput() ?: $commit->errorOutput());
+        }
+    }
+
+    return response()->json([
+        'success' => true,
+        'results' => $results
+    ]);
 });
